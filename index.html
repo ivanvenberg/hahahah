@@ -60,10 +60,23 @@
   @keyframes fadeIn {
     to { opacity: 1; }
   }
+
+  #status {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.5);
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
 
+<div id="status">Loading Manul…</div>
 <div id="name">Manul</div>
 
 <div id="controls">
@@ -84,7 +97,9 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a0a);
@@ -111,7 +126,6 @@ controls.maxDistance = 8;
 controls.maxPolarAngle = Math.PI / 2 + 0.1;
 controls.update();
 
-// Ground
 const ground = new THREE.Mesh(
   new THREE.CircleGeometry(4, 64),
   new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9, metalness: 0.1 })
@@ -120,7 +134,6 @@ ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
-// Subtle rim ring on ground
 const ring = new THREE.Mesh(
   new THREE.RingGeometry(1.1, 1.2, 64),
   new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.DoubleSide })
@@ -129,7 +142,6 @@ ring.rotation.x = -Math.PI / 2;
 ring.position.y = 0.001;
 scene.add(ring);
 
-// Spotlight — main
 const spot = new THREE.SpotLight(0xfff4e0, 8, 12, Math.PI / 7, 0.4, 1.5);
 spot.position.set(0, 6, 1);
 spot.target.position.set(0, 0.8, 0);
@@ -140,15 +152,12 @@ spot.shadow.camera.far = 15;
 scene.add(spot);
 scene.add(spot.target);
 
-// Dim fill light
 const fill = new THREE.DirectionalLight(0x3a4fff, 0.4);
 fill.position.set(-3, 2, -2);
 scene.add(fill);
 
-// Very subtle ambient
 scene.add(new THREE.AmbientLight(0x111111, 0.5));
 
-// Spotlight cone visual (optional subtle effect)
 const coneGeo = new THREE.ConeGeometry(0.9, 5, 32, 1, true);
 const coneMat = new THREE.MeshBasicMaterial({
   color: 0xfff4e0,
@@ -162,77 +171,71 @@ cone.position.set(0, 3.5, 0.5);
 cone.rotation.x = Math.PI;
 scene.add(cone);
 
-// --- Animation system ---
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 const loader = new GLTFLoader();
-const animations = {};
+loader.setDRACOLoader(dracoLoader);
+const cache = {};
 let mixer = null;
-let currentAction = null;
 let currentModel = null;
 
-const animFiles = ['Silly_Dancing', 'Walking', 'Crouching'];
+const GLB_BASE = 'https://github.com/ivanvenberg/hahahah/releases/download/manul/';
 
 async function loadGLB(name) {
+  const response = await fetch(GLB_BASE + `${name}.glb`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const arrayBuffer = await response.arrayBuffer();
   return new Promise((resolve, reject) => {
-    loader.load(`${name}.glb`, resolve, undefined, reject);
+    loader.parse(arrayBuffer, '', resolve, reject);
   });
 }
 
 async function switchAnimation(name) {
-  if (animations[name]) {
-    playAnimation(animations[name]);
-    return;
-  }
+  const status = document.getElementById('status');
+  status.textContent = 'Loading…';
   try {
-    const gltf = await loadGLB(name);
-    animations[name] = gltf;
-    playAnimation(gltf);
+    if (!cache[name]) {
+      cache[name] = await loadGLB(name);
+    }
+    playAnimation(cache[name]);
+    status.textContent = '';
   } catch (e) {
     console.error('Failed to load', name, e);
+    status.textContent = 'Error: ' + e.message;
   }
 }
 
 function playAnimation(gltf) {
-  // Remove old model
   if (currentModel) scene.remove(currentModel);
+  if (mixer) { mixer.stopAllAction(); mixer = null; }
 
-  const model = gltf.scene.clone ? gltf.scene : gltf.scene;
-  // We need a fresh mixer per switch — use the original scene
-  const freshScene = gltf.scene;
+  const clone = SkeletonUtils.clone(gltf.scene);
 
-  if (currentModel) scene.remove(currentModel);
-  currentModel = freshScene;
-
-  // Center & scale model
-  const box = new THREE.Box3().setFromObject(freshScene);
+  const box = new THREE.Box3().setFromObject(clone);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const scale = 1.8 / size.y;
-  freshScene.scale.setScalar(scale);
-  freshScene.position.x = -center.x * scale;
-  freshScene.position.y = -box.min.y * scale;
-  freshScene.position.z = -center.z * scale;
+  clone.scale.setScalar(scale);
+  clone.position.x = -center.x * scale;
+  clone.position.y = -box.min.y * scale;
+  clone.position.z = -center.z * scale;
 
-  freshScene.traverse(child => {
+  clone.traverse(child => {
     if (child.isMesh) {
       child.castShadow = true;
       child.receiveShadow = true;
     }
   });
 
-  scene.add(freshScene);
+  scene.add(clone);
+  currentModel = clone;
 
-  // Mixer
-  if (mixer) mixer.stopAllAction();
-  mixer = new THREE.AnimationMixer(freshScene);
-
+  mixer = new THREE.AnimationMixer(clone);
   if (gltf.animations && gltf.animations.length > 0) {
-    const action = mixer.clipAction(gltf.animations[0]);
-    action.reset().play();
-    currentAction = action;
+    mixer.clipAction(gltf.animations[0]).reset().play();
   }
 }
 
-// Buttons
 document.querySelectorAll('.btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
@@ -241,10 +244,8 @@ document.querySelectorAll('.btn').forEach(btn => {
   });
 });
 
-// Load first animation
 switchAnimation('Silly_Dancing');
 
-// Animate
 const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
