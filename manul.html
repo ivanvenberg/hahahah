@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manul</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+  }
+  canvas { display: block; }
+
+  #name {
+    position: fixed;
+    bottom: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #fff;
+    font-size: clamp(2rem, 6vw, 4.5rem);
+    letter-spacing: 0.5em;
+    text-transform: uppercase;
+    opacity: 0;
+    animation: fadeIn 2s ease 1s forwards;
+    pointer-events: none;
+    text-shadow: 0 0 40px rgba(255,255,255,0.3);
+  }
+
+  #controls {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    opacity: 0;
+    animation: fadeIn 1.5s ease 2s forwards;
+  }
+
+  .btn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.25);
+    color: rgba(255,255,255,0.6);
+    padding: 6px 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn:hover, .btn.active {
+    border-color: rgba(255,255,255,0.8);
+    color: #fff;
+    background: rgba(255,255,255,0.05);
+  }
+
+  @keyframes fadeIn {
+    to { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div id="name">Manul</div>
+
+<div id="controls">
+  <button class="btn active" data-anim="Silly_Dancing">Dancing</button>
+  <button class="btn" data-anim="Walking">Walking</button>
+  <button class="btn" data-anim="Crouching">Crouching</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a0a);
+scene.fog = new THREE.Fog(0x0a0a0a, 8, 20);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 1.4, 4.5);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.minDistance = 2;
+controls.maxDistance = 8;
+controls.maxPolarAngle = Math.PI / 2 + 0.1;
+controls.update();
+
+// Ground
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(4, 64),
+  new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9, metalness: 0.1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Subtle rim ring on ground
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(1.1, 1.2, 64),
+  new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.DoubleSide })
+);
+ring.rotation.x = -Math.PI / 2;
+ring.position.y = 0.001;
+scene.add(ring);
+
+// Spotlight — main
+const spot = new THREE.SpotLight(0xfff4e0, 8, 12, Math.PI / 7, 0.4, 1.5);
+spot.position.set(0, 6, 1);
+spot.target.position.set(0, 0.8, 0);
+spot.castShadow = true;
+spot.shadow.mapSize.set(2048, 2048);
+spot.shadow.camera.near = 0.5;
+spot.shadow.camera.far = 15;
+scene.add(spot);
+scene.add(spot.target);
+
+// Dim fill light
+const fill = new THREE.DirectionalLight(0x3a4fff, 0.4);
+fill.position.set(-3, 2, -2);
+scene.add(fill);
+
+// Very subtle ambient
+scene.add(new THREE.AmbientLight(0x111111, 0.5));
+
+// Spotlight cone visual (optional subtle effect)
+const coneGeo = new THREE.ConeGeometry(0.9, 5, 32, 1, true);
+const coneMat = new THREE.MeshBasicMaterial({
+  color: 0xfff4e0,
+  transparent: true,
+  opacity: 0.02,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+const cone = new THREE.Mesh(coneGeo, coneMat);
+cone.position.set(0, 3.5, 0.5);
+cone.rotation.x = Math.PI;
+scene.add(cone);
+
+// --- Animation system ---
+const loader = new GLTFLoader();
+const animations = {};
+let mixer = null;
+let currentAction = null;
+let currentModel = null;
+
+const animFiles = ['Silly_Dancing', 'Walking', 'Crouching'];
+
+async function loadGLB(name) {
+  return new Promise((resolve, reject) => {
+    loader.load(`${name}.glb`, resolve, undefined, reject);
+  });
+}
+
+async function switchAnimation(name) {
+  if (animations[name]) {
+    playAnimation(animations[name]);
+    return;
+  }
+  try {
+    const gltf = await loadGLB(name);
+    animations[name] = gltf;
+    playAnimation(gltf);
+  } catch (e) {
+    console.error('Failed to load', name, e);
+  }
+}
+
+function playAnimation(gltf) {
+  // Remove old model
+  if (currentModel) scene.remove(currentModel);
+
+  const model = gltf.scene.clone ? gltf.scene : gltf.scene;
+  // We need a fresh mixer per switch — use the original scene
+  const freshScene = gltf.scene;
+
+  if (currentModel) scene.remove(currentModel);
+  currentModel = freshScene;
+
+  // Center & scale model
+  const box = new THREE.Box3().setFromObject(freshScene);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const scale = 1.8 / size.y;
+  freshScene.scale.setScalar(scale);
+  freshScene.position.x = -center.x * scale;
+  freshScene.position.y = -box.min.y * scale;
+  freshScene.position.z = -center.z * scale;
+
+  freshScene.traverse(child => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+
+  scene.add(freshScene);
+
+  // Mixer
+  if (mixer) mixer.stopAllAction();
+  mixer = new THREE.AnimationMixer(freshScene);
+
+  if (gltf.animations && gltf.animations.length > 0) {
+    const action = mixer.clipAction(gltf.animations[0]);
+    action.reset().play();
+    currentAction = action;
+  }
+}
+
+// Buttons
+document.querySelectorAll('.btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    switchAnimation(btn.dataset.anim);
+  });
+});
+
+// Load first animation
+switchAnimation('Silly_Dancing');
+
+// Animate
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  if (mixer) mixer.update(dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
